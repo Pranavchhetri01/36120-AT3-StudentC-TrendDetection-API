@@ -1,0 +1,28 @@
+{
+    "model_name": "Class-Weighted XGBoost",
+    "features": [
+        "MA5",
+        "MA20",
+        "Return20"
+    ],
+    "classes": [
+        "Strong Downtrend",
+        "Downtrend",
+        "Sideways",
+        "Uptrend",
+        "Strong Uptrend"
+    ],
+    "forecast_horizon_days": 7,
+    "cryptocurrencies": [
+        "BTC",
+        "DOGE",
+        "ETH",
+        "SOL",
+        "TRX",
+        "XLM",
+        "XMR",
+        "XRP"
+    ],
+    "test_accuracy": 0.34134615384615385,
+    "test_macro_f1": 0.32842188025088326
+}
