@@ -23,7 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_PATH = BASE_DIR / "models" / "trend_classifier.joblib"
 METADATA_PATH = BASE_DIR / "models" / "metadata.json"
 
-# Preserve the exact Experiment 1 feature order.
+# Exact feature names and order used during Experiment 1 training.
 EXPECTED_FEATURES = ["MA5", "MA20", "Return20"]
 
 
@@ -34,7 +34,7 @@ class PredictionRequest(BaseModel):
 
 @lru_cache(maxsize=1)
 def load_artifacts():
-    """Load and cache the trained Experiment 1 model and metadata."""
+    """Load and cache the verified Experiment 1 model and metadata."""
 
     if not MODEL_PATH.is_file():
         raise RuntimeError("Trained model file is missing")
@@ -56,7 +56,9 @@ def load_artifacts():
         raise RuntimeError("Expected five trend categories")
 
     if getattr(model, "n_features_in_", None) != 3:
-        raise RuntimeError("Model must expect three input features")
+        raise RuntimeError(
+            "Model must expect exactly three input features"
+        )
 
     return model, metadata
 
@@ -75,24 +77,22 @@ def predict_trend(request: PredictionRequest):
     # Step 2: Validate cryptocurrency.
     try:
         token = resolve_token(request.token)
-
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail=str(exc),
         ) from exc
 
-    # Step 3: Load saved model.
+    # Step 3: Load the trained model and metadata.
     try:
         model, metadata = load_artifacts()
-
     except Exception as exc:
         raise HTTPException(
             status_code=503,
             detail="Trained model or metadata is unavailable",
         ) from exc
 
-    # Step 4: Fetch live data and generate predictions.
+    # Step 4: Fetch live market data.
     try:
         raw_data = fetch_token(token)
 
@@ -108,8 +108,17 @@ def predict_trend(request: PredictionRequest):
 
         latest = engineered.iloc[-1]
 
-        # Step 5: Calculate the three predictors locally.
-        # These serve as fallback if teammate APIs are offline.
+        # Step 5: Identify the latest completed Kraken candle.
+        #
+        # This date will also be used to verify that teammate
+        # features refer to the same market observation.
+        data_date = pd.Timestamp(latest["Date"]).date()
+        data_date_str = data_date.isoformat()
+
+        # Step 6: Compute all three features locally.
+        #
+        # These are fallback values if teammate services
+        # cannot be reached or their data is out of date.
         local_features = {}
 
         for feature in EXPECTED_FEATURES:
@@ -122,19 +131,25 @@ def predict_trend(request: PredictionRequest):
 
             local_features[feature] = value
 
-        # Step 6: Attempt to obtain shared predictors.
+        # Step 7: Obtain features from teammate services.
         #
-        # Student A owns Return20.
-        # Student B owns MA5 and MA20.
+        # Student A provides Return20.
+        # Student B provides MA5 and MA20.
         #
-        # team_features.py handles local fallback.
+        # The helper verifies the remote feature date
+        # against the latest local Kraken candle date.
+        #
+        # If the request fails, the date differs, or the
+        # response contains invalid values, it falls back
+        # to the locally calculated Kraken features.
         values, feature_sources = get_shared_features(
             token=token,
             local_features=local_features,
             horizon=request.forecast_horizon,
+            data_date=data_date_str,
         )
 
-        # Step 7: Validate the final feature values.
+        # Step 8: Validate the final features.
         for feature in EXPECTED_FEATURES:
             if feature not in values:
                 raise ValueError(
@@ -150,13 +165,15 @@ def predict_trend(request: PredictionRequest):
 
             values[feature] = value
 
-        # Step 8: Construct input in the original training order.
+        # Step 9: Construct the model input.
+        #
+        # Preserve the exact feature order from Experiment 1.
         model_input = pd.DataFrame(
             [[values[name] for name in EXPECTED_FEATURES]],
             columns=EXPECTED_FEATURES,
         )
 
-        # Step 9: Generate model prediction and probabilities.
+        # Step 10: Generate predictions and probabilities.
         predicted_class = int(model.predict(model_input)[0])
         probabilities = model.predict_proba(model_input)[0]
 
@@ -177,15 +194,14 @@ def predict_trend(request: PredictionRequest):
         if not math.isfinite(confidence):
             raise ValueError("Invalid prediction confidence")
 
-        # Step 10: Calculate forecast date.
-        data_date = pd.Timestamp(latest["Date"]).date()
+        # Step 11: Calculate the seven-day forecast date.
         forecast_date = data_date + timedelta(days=7)
 
-        # Step 11: Return prediction results.
+        # Step 12: Return the final prediction.
         return {
             "token": token,
             "forecast_horizon": 7,
-            "data_date": data_date.isoformat(),
+            "data_date": data_date_str,
             "forecast_date": forecast_date.isoformat(),
             "prediction": labels[predicted_class],
             "confidence": round(confidence, 6),
